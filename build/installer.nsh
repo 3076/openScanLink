@@ -26,8 +26,12 @@ path_ok:
 !macroend
 
 !macro customUnInit
-  MessageBox MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON2 "您确实要完全移除 OpenScanLink ，及其所有的组件？" IDYES +2
+  MessageBox MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON2 "您确定要完全移除 OpenScanLink ，及其所有的组件？" IDYES +2
   Abort
+  
+  ; 在卸载前杀掉可能正在运行的进程
+  nsExec::ExecToStack 'taskkill /F /IM OpenScanLink.exe /T'
+  
   SetSilent silent
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenScanLink"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenScanLink"
