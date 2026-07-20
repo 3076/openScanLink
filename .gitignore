@@ -1,0 +1,16 @@
+﻿node_modules/
+out/
+release/
+test_scans/
+*.log
+.DS_Store
+agent
+
+test_*.json
+bridge/test_param.json
+bridge/*.png
+bridge/*.pdb
+bridge/ScannerService/bin/
+bridge/ScannerService/obj/
+bridge/ScannerService.exe
+

@@ -1,0 +1,215 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using Newtonsoft.Json;
+using ImageMagick;
+
+namespace ScannerService
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            Console.OutputEncoding = Encoding.UTF8;
+
+            if (args.Length == 0) {
+                ListDevices();
+                return;
+            }
+
+            try {
+                string input = args[0].Trim();
+                string jsonParams;
+
+                // 逻辑：如果参数是一个存在的文件路径，则读取文件；否则按 JSON 处理
+                if (File.Exists(input)) {
+                    jsonParams = File.ReadAllText(input, Encoding.UTF8);
+                } else {
+                    jsonParams = input;
+                }
+
+                var options = JsonConvert.DeserializeObject<dynamic>(jsonParams);
+                if (options == null) throw new Exception("无法解析参数内容");
+                
+                StartHighSpeedScan(options);
+            }
+            catch (Exception ex) {
+                Console.WriteLine(JsonConvert.SerializeObject(new { 
+                    status = "error", 
+                    message = "核心调度错误: " + ex.Message 
+                }));
+            }
+        }
+
+        static void ListDevices()
+        {
+            try {
+                Type managerType = Type.GetTypeFromProgID("WIA.DeviceManager");
+                dynamic deviceManager = Activator.CreateInstance(managerType);
+                var devices = new List<object>();
+                foreach (dynamic info in deviceManager.DeviceInfos) {
+                    if (info.Type == 1) {
+                        devices.Add(new { 
+                            id = info.DeviceID, 
+                            name = info.Properties["Name"].Value.ToString(), 
+                            provider = "WIA" 
+                        });
+                    }
+                }
+                Console.WriteLine(JsonConvert.SerializeObject(new { success = true, data = devices }));
+            } catch (Exception ex) {
+                Console.WriteLine(JsonConvert.SerializeObject(new { success = false, message = ex.Message }));
+            }
+        }
+
+        static void StartHighSpeedScan(dynamic options)
+        {
+            List<string> savedFiles = new List<string>();
+            try {
+                string deviceId = options.deviceId?.ToString();
+                if (string.IsNullOrEmpty(deviceId)) throw new Exception("未选择有效的扫描仪设备");
+
+                int dpi = (int?)options.dpi ?? 300;
+                string modeStr = (string)options.mode ?? "gray";
+                int intent = modeStr == "color" ? 1 : (modeStr == "gray" ? 2 : 4);
+                int dataType = modeStr == "color" ? 3 : (modeStr == "gray" ? 2 : 0);
+                bool duplex = (bool?)options.duplex ?? false;
+                bool autoDeskew = (bool?)options.autoDeskew ?? true;
+                bool rotate180 = (bool?)options.rotate180 ?? false;
+                
+                string saveDir = options.saveDir?.ToString();
+                if (string.IsNullOrEmpty(saveDir)) {
+                    saveDir = @"C:\Users\Public\EduScan\data\images";
+                }
+                if (!Directory.Exists(saveDir)) {
+                    Directory.CreateDirectory(saveDir);
+                }
+
+                Type managerType = Type.GetTypeFromProgID("WIA.DeviceManager");
+                dynamic deviceManager = Activator.CreateInstance(managerType);
+                
+                dynamic targetDeviceInfo = null;
+                foreach (dynamic info in deviceManager.DeviceInfos) {
+                    if (info.DeviceID == deviceId) { targetDeviceInfo = info; break; }
+                }
+
+                if (targetDeviceInfo == null) throw new Exception("找不到选定的扫描仪");
+
+                dynamic device = targetDeviceInfo.Connect();
+
+                try {
+                    // 5 = ADF + Duplex, 1 = ADF
+                    SetProperty(device.Properties, "3088", duplex ? 5 : 1);
+                    // 注意：AU362 WIA 驱动不支持通过 Automation API 更改 3096 (Pages) 属性。
+                    // 若设为 0 或 50，会导致后续 Transfer() 抛出参数错误。
+                    // 连续扫描的物理停顿是 WIA Automation API 单页拉取的固有机制，无法避免。
+                } catch {
+                    // 某些设备可能不支持这些属性，忽略错误
+                }
+
+                dynamic item = device.Items[1];
+                SetProperty(item.Properties, "6146", intent); // WIA_IPA_CURRENT_INTENT
+                SetProperty(item.Properties, "4103", dataType); // WIA_IPA_DATATYPE
+                SetProperty(item.Properties, "6147", dpi);
+                SetProperty(item.Properties, "6148", dpi);
+
+                bool hasMorePages = true;
+                while (hasMorePages) {
+                    try {
+                        dynamic image = null;
+                        
+                        try {
+                            // WIA 2.0 默认传输为 BMP
+                            image = item.Transfer();
+                        } catch (System.Runtime.InteropServices.COMException ex) {
+                            if ((uint)ex.ErrorCode == 0x80210003) {
+                                hasMorePages = false;
+                                break;
+                            }
+                            throw;
+                        } catch (Exception ex) {
+                            if (ex.Message.Contains("文档剩余") || ex.Message.Contains("80210003") || ex.Message.Contains("no documents")) {
+                                hasMorePages = false;
+                                break;
+                            }
+                            if (ex.InnerException is System.Runtime.InteropServices.COMException innerComEx && (uint)innerComEx.ErrorCode == 0x80210003) {
+                                hasMorePages = false;
+                                break;
+                            }
+                            throw new Exception("Transfer Error: " + ex.Message + "\r\n" + ex.StackTrace);
+                        }
+
+                        if (image != null) {
+                            string savePath = Path.Combine(saveDir, $"scan_{DateTime.Now:yyyyMMdd_HHmmss_fff}.jpg");
+                            image.SaveFile(savePath);
+
+                            // 使用 Magick.NET 进行软件级图像后处理
+                            try {
+                                using (var magickImage = new MagickImage(savePath)) {
+                                    // 1. 终极去底灰方案：强制白阈值漂白
+                                    if (modeStr != "color") {
+                                        magickImage.WhiteThreshold(new Percentage(60));
+                                        magickImage.BlackThreshold(new Percentage(5));
+                                        magickImage.Normalize();
+                                    } else {
+                                        // 彩色模式下，采用更温和的去底灰，避免破坏彩色图像
+                                        magickImage.WhiteThreshold(new Percentage(85));
+                                    }
+
+                                    // 2. 切除四周背板边缘
+                                    magickImage.ColorFuzz = new Percentage(40); 
+                                    magickImage.Trim();
+
+                                    // 3. 自动纠偏（恢复 40% 默认阈值以保证准确率）
+                                    if (autoDeskew) {
+                                        magickImage.BackgroundColor = MagickColors.White;
+                                        magickImage.Deskew(new Percentage(40)); 
+                                        magickImage.Trim();      
+                                    }
+
+                                    // 4. 旋转 180°
+                                    if (rotate180) {
+                                        magickImage.Rotate(180);
+                                    }
+
+                                    // 5. 补一点点白边，让文档看起来舒服
+                                    magickImage.BorderColor = MagickColors.White;
+                                    magickImage.Border(15);
+
+                                    // 覆盖保存处理后的图像
+                                    magickImage.Write(savePath);
+                                }
+                            } catch (Exception processEx) {
+                                Console.WriteLine(JsonConvert.SerializeObject(new { status = "scanning", progress = 50, message = $"图像后处理失败，保留原图: {processEx.Message}" }));
+                            }
+
+                            savedFiles.Add(savePath);
+                            Console.WriteLine(JsonConvert.SerializeObject(new { status = "scanning", progress = 50, message = $"正在采集第 {savedFiles.Count} 页..." }));
+                        } else {
+                            hasMorePages = false;
+                        }
+                    } catch (System.Runtime.InteropServices.COMException ex) {
+                        if ((uint)ex.ErrorCode == 0x80210003) hasMorePages = false;
+                        else throw ex;
+                    }
+                }
+
+                Console.WriteLine(JsonConvert.SerializeObject(new { status = "finished", progress = 100, message = "批量扫描完成", files = savedFiles }));
+            } catch (Exception ex) {
+                Console.WriteLine(JsonConvert.SerializeObject(new { status = "error", message = ex.Message + " | " + ex.StackTrace }));
+            }
+        }
+
+        static void SetProperty(dynamic properties, string propId, object value) {
+            try {
+                foreach (dynamic prop in properties) {
+                    if (prop.PropertyID.ToString() == propId) {
+                        prop.Value = value;
+                        break;
+                    }
+                }
+            } catch { }
+        }
+    }
+}
