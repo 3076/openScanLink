@@ -59,6 +59,8 @@ npm run dev
 npm run build:win
 ```
 
+> **📦 打包产物说明**：执行 `npm run build:win` 后，生成的安装包（如 `OpenScanLink Setup 1.0.0.exe`）及免安装版目录将会输出到项目根目录的 `release/1.0.0/` 文件夹下。
+
 ## 📖 文档指南
 
 项目中包含详细的对接与二次开发文档：
