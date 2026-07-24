@@ -80,9 +80,9 @@ npm run build:win
 如果您觉得 OpenScanLink 对您的项目有帮助，或者为您节省了开发时间，欢迎请作者喝杯咖啡 ☕️，您的支持是项目持续维护的动力！
 
 <div align="center">
-  <img src="assets/alipay.jpg" width="300" alt="支付宝赞助" />
+  <img src="assets/alipay.jpg" width="150" alt="支付宝赞助" />
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="assets/wechat.jpg" width="300" alt="微信赞助" />
+  <img src="assets/wechat.jpg" width="150" alt="微信赞助" />
 </div>
 
 如果你在对接或使用过程中遇到任何问题，欢迎添加我的个人微信进行交流（**添加时请备注：OpenScanLink**）：
